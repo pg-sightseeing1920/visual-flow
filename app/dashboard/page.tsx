@@ -4,11 +4,8 @@ import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { useAuthStore } from '@/lib/store/auth'
-import { createClient } from '@/lib/supabase/client'
-import { Database } from '@/lib/supabase/client'
+import { createClient, Project } from '@/lib/supabase/client'
 import { toast } from 'react-hot-toast'
-
-type Project = Database['public']['Tables']['projects']['Row']
 
 export default function DashboardPage() {
   const { user, loading, signOut } = useAuthStore()
@@ -22,24 +19,47 @@ export default function DashboardPage() {
       return
     }
 
-    if (user) {
+    if (user && !loading) {
       loadProjects()
     }
-  }, [user, loading, router])
+  }, [user, loading])
 
   const loadProjects = async () => {
     try {
       const supabase = createClient()
+      console.log('Loading projects for user:', user?.id)
+      
+      // まずは認証状態を確認
+      const { data: { session }, error: sessionError } = await supabase.auth.getSession()
+      console.log('Current session:', session, sessionError)
+      
+      // シンプルなクエリでテスト
       const { data, error } = await supabase
         .from('projects')
         .select('*')
         .order('created_at', { ascending: false })
 
-      if (error) throw error
+      console.log('Supabase response:', { data, error })
+      
+      if (error) {
+        console.error('Supabase error details:', {
+          message: error.message,
+          details: error.details,
+          hint: error.hint,
+          code: error.code
+        })
+        throw error
+      }
+      
+      console.log('Projects loaded successfully:', data)
       setProjects(data || [])
     } catch (error: any) {
-      toast.error('プロジェクトの読み込みに失敗しました')
-      console.error('Error loading projects:', error)
+      console.error('Full error object:', {
+        message: error.message,
+        name: error.name,
+        stack: error.stack
+      })
+      toast.error(`プロジェクトの読み込みに失敗しました: ${error.message}`)
     } finally {
       setProjectsLoading(false)
     }
@@ -57,23 +77,30 @@ export default function DashboardPage() {
   const createNewProject = async () => {
     try {
       const supabase = createClient()
-      const { data, error } = await supabase
+      const { data, error } = await (supabase
         .from('projects')
         .insert({
           name: '新しいプロジェクト',
           description: '',
           owner_id: user!.id,
-        })
+        } as any)
         .select()
-        .single()
+        .single()) as { data: Project | null; error: any }
 
-      if (error) throw error
-      
+      if (error) {
+        console.error('Project creation error:', error)
+        throw error
+      }
+
+      if (!data) {
+        throw new Error('Failed to create project')
+      }
+
       toast.success('プロジェクトを作成しました')
       router.push(`/project/${data.id}`)
     } catch (error: any) {
-      toast.error('プロジェクトの作成に失敗しました')
       console.error('Error creating project:', error)
+      toast.error(`プロジェクトの作成に失敗しました: ${error.message}`)
     }
   }
 
