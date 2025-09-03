@@ -12,9 +12,13 @@ import { Block } from '@/lib/supabase/client'
 
 interface CanvasProps {
   projectId: string
+  canEdit?: boolean
+  canComment?: boolean 
 }
 
-export const Canvas = ({ projectId }: CanvasProps) => {
+type AnchorType = 'top' | 'right' | 'bottom' | 'left'
+
+export const Canvas = ({ projectId, canEdit = true, canComment = true }: CanvasProps) => {
   const stageRef = useRef<Konva.Stage>(null)
   const [dimensions, setDimensions] = useState({ width: 1200, height: 800 })
   const [editingBlock, setEditingBlock] = useState<Block | null>(null)
@@ -41,6 +45,23 @@ export const Canvas = ({ projectId }: CanvasProps) => {
     setConnectingFrom
   } = useCanvasStore()
 
+  // Phase 2: 権限をstoreから取得（存在しない場合は undefined）
+  const storeState = useCanvasStore.getState()
+  const storeCanEdit = storeState.canEdit
+  const storeCanComment = storeState.canComment
+  const setPermissions = storeState.setPermissions
+
+  // Phase 2: 権限を設定（props優先、fallbackでstore値）
+  const effectiveCanEdit = canEdit && (storeCanEdit !== undefined ? storeCanEdit : true)
+  const effectiveCanComment = canComment && (storeCanComment !== undefined ? storeCanComment : true)
+
+  // Phase 2: 権限をstoreに設定（setPermissionsが存在する場合のみ）
+  useEffect(() => {
+    if (setPermissions) {
+      setPermissions(canEdit, canComment)
+    }
+  }, [canEdit, canComment, setPermissions])
+
   // ウィンドウサイズの取得と更新
   useEffect(() => {
     const updateDimensions = () => {
@@ -56,8 +77,8 @@ export const Canvas = ({ projectId }: CanvasProps) => {
     return () => window.removeEventListener('resize', updateDimensions)
   }, [])
 
-  // 接続点の座標を計算
-  const getAnchorPosition = (block: Block, anchor: string) => {
+  // 接続点の座標を計算（型を明示的に指定）
+  const getAnchorPosition = (block: Block, anchor: AnchorType) => {
     const blockWidth = 160
     const blockHeight = 80
     
@@ -86,8 +107,12 @@ export const Canvas = ({ projectId }: CanvasProps) => {
       const targetBlock = blocks.find(b => b.id === connection.target_block_id)
       
       if (sourceBlock && targetBlock) {
-        const sourcePos = getAnchorPosition(sourceBlock, connection.source_anchor)
-        const targetPos = getAnchorPosition(targetBlock, connection.target_anchor)
+        // 型アサーションで安全にキャスト
+        const sourceAnchor = connection.source_anchor as AnchorType
+        const targetAnchor = connection.target_anchor as AnchorType
+        
+        const sourcePos = getAnchorPosition(sourceBlock, sourceAnchor)
+        const targetPos = getAnchorPosition(targetBlock, targetAnchor)
         
         // 矢印の計算
         const dx = targetPos.x - sourcePos.x
@@ -160,15 +185,27 @@ export const Canvas = ({ projectId }: CanvasProps) => {
 
   const nextStepBlocks = getNextStepBlocks()
 
-  // 接続開始ハンドラー
+  // 接続開始ハンドラー（BlockComponentに合わせてanchorはstringを受け取り、内部で型付け）
   const handleConnectionStart = (blockId: string, anchor: string, position: { x: number; y: number }) => {
-    console.log('接続開始:', { blockId, anchor, position })
+    const typedAnchor = anchor as AnchorType
+    // 権限チェック
+    if (!effectiveCanEdit) {
+      toast.error('編集権限がありません')
+      return
+    }
+    
+    console.log('接続開始:', { blockId, anchor: typedAnchor, position })
     setIsConnecting(true)
-    setConnectingFrom({ blockId, anchor, position })
+    setConnectingFrom({ blockId, anchor: typedAnchor, position })
   }
 
   // ブロック編集ハンドラー
   const handleEditBlock = (block: Block) => {
+    if (!effectiveCanEdit) {
+      toast.error('編集権限がありません')
+      return
+    }
+    
     setEditingBlock(block)
     setIsEditModalOpen(true)
   }
@@ -180,12 +217,17 @@ export const Canvas = ({ projectId }: CanvasProps) => {
 
   // ブロック削除ハンドラー
   const handleDeleteBlock = (block: Block) => {
+    if (!effectiveCanEdit) {
+      toast.error('削除権限がありません')
+      return
+    }
+    
     setDeletingBlock(block)
     setIsDeleteDialogOpen(true)
   }
 
   const handleConfirmDelete = async () => {
-    if (!deletingBlock) return
+    if (!deletingBlock || !effectiveCanEdit) return
 
     try {
       const supabase = createClient()
@@ -255,7 +297,7 @@ export const Canvas = ({ projectId }: CanvasProps) => {
       
       setSelectedBlock(null)
       
-      if (isCreatingBlock) {
+      if (isCreatingBlock && effectiveCanEdit) {
         console.log('ブロック作成モード中 - 新しいブロックを作成します')
         const stage = stageRef.current
         if (stage) {
@@ -276,6 +318,9 @@ export const Canvas = ({ projectId }: CanvasProps) => {
             setIsCreatingBlock(false)
           }
         }
+      } else if (isCreatingBlock && !effectiveCanEdit) {
+        toast.error('ブロックを作成する権限がありません')
+        setIsCreatingBlock(false)
       }
     } else {
       console.log('Stage 以外がクリックされました:', e.target.className)
@@ -284,6 +329,11 @@ export const Canvas = ({ projectId }: CanvasProps) => {
 
   // 新しいブロック作成
   const createNewBlock = async (position: { x: number; y: number }) => {
+    if (!effectiveCanEdit) {
+      toast.error('ブロック作成権限がありません')
+      return
+    }
+    
     try {
       const supabase = createClient()
       const supabaseAny = supabase as any
@@ -456,6 +506,10 @@ export const Canvas = ({ projectId }: CanvasProps) => {
         <div className="text-xs text-gray-500">
           位置: ({Math.round(pan.x)}, {Math.round(pan.y)})
         </div>
+        {/* Phase 2: 権限表示 */}
+        <div className="text-xs text-gray-500">
+          権限: {effectiveCanEdit ? '編集可' : '読み取り専用'}
+        </div>
         {isConnecting && (
           <div className="text-xs text-blue-600 font-medium">
             接続モード中...
@@ -463,18 +517,20 @@ export const Canvas = ({ projectId }: CanvasProps) => {
         )}
       </div>
 
-      {/* ツールバー */}
+      {/* ツールバー - Phase 2: 権限に応じて表示制御 */}
       <div className="absolute top-4 right-4 bg-white rounded-lg shadow-lg p-3 flex space-x-2">
-        <button
-          onClick={() => setIsCreatingBlock(!isCreatingBlock)}
-          className={`px-3 py-2 rounded text-sm transition-colors ${
-            isCreatingBlock
-              ? 'bg-blue-600 text-white'
-              : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-          }`}
-        >
-          + ブロック
-        </button>
+        {effectiveCanEdit && (
+          <button
+            onClick={() => setIsCreatingBlock(!isCreatingBlock)}
+            className={`px-3 py-2 rounded text-sm transition-colors ${
+              isCreatingBlock
+                ? 'bg-blue-600 text-white'
+                : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+            }`}
+          >
+            + ブロック
+          </button>
+        )}
         
         <button
           onClick={() => {
@@ -511,7 +567,7 @@ export const Canvas = ({ projectId }: CanvasProps) => {
       </div>
 
       {/* ブロック作成モードの指示 */}
-      {isCreatingBlock && (
+      {isCreatingBlock && effectiveCanEdit && (
         <div className="absolute bottom-4 left-1/2 transform -translate-x-1/2 bg-blue-600 text-white px-4 py-2 rounded-lg shadow-lg">
           クリックしてブロックを作成
         </div>
@@ -521,6 +577,13 @@ export const Canvas = ({ projectId }: CanvasProps) => {
       {isConnecting && connectingFrom && (
         <div className="absolute bottom-4 left-1/2 transform -translate-x-1/2 bg-green-600 text-white px-4 py-2 rounded-lg shadow-lg">
           接続先のブロックの接続点をクリックしてください
+        </div>
+      )}
+
+      {/* Phase 2: 権限不足時の通知 */}
+      {!effectiveCanEdit && (
+        <div className="absolute bottom-4 left-1/2 transform -translate-x-1/2 bg-yellow-600 text-white px-4 py-2 rounded-lg shadow-lg text-sm">
+          閲覧専用モード - 編集権限がありません
         </div>
       )}
     </div>

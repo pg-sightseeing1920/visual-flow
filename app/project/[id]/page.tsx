@@ -6,7 +6,14 @@ import dynamic from 'next/dynamic'
 import { useAuthStore } from '@/lib/store/auth'
 import { useCanvasStore } from '@/lib/store/canvas'
 import { createClient, Project, Block } from '@/lib/supabase/client'
+import { useProjectPermissions } from '@/lib/permissions'
 import { toast } from 'react-hot-toast'
+import { 
+  CogIcon,
+  ShareIcon,
+  UserGroupIcon,
+  BellIcon
+} from '@heroicons/react/24/outline'
 
 // Dynamic import でCanvasコンポーネントをクライアントサイドでのみ読み込み
 const Canvas = dynamic(
@@ -32,9 +39,16 @@ export default function ProjectPage({ params }: ProjectPageProps) {
   const [resolvedParams, setResolvedParams] = useState<{ id: string } | null>(null)
   const [project, setProject] = useState<Project | null>(null)
   const [loading, setLoading] = useState(true)
+  
+  // Phase 2: 権限管理用の状態変数を追加
+  const [currentUserRole, setCurrentUserRole] = useState<'owner' | 'admin' | 'editor' | 'viewer' | null>(null)
+  
   const { user } = useAuthStore()
   const { setBlocks, setConnections } = useCanvasStore()
   const router = useRouter()
+
+  // Phase 2: 権限チェック
+  const { permissions, checker } = useProjectPermissions(currentUserRole || undefined)
 
   // paramsの解決
   useEffect(() => {
@@ -68,15 +82,31 @@ export default function ProjectPage({ params }: ProjectPageProps) {
       if (!projectData) {
         throw new Error('Project not found')
       }
-      
-      // アクセス権限チェック
-      if (projectData.owner_id !== user!.id) {
-        toast.error('このプロジェクトにアクセスする権限がありません')
-        router.push('/dashboard')
-        return
-      }
-  
+
       setProject(projectData)
+
+      // Phase 2: プロジェクトメンバーシップをチェック
+      const { data: membershipData, error: membershipError } = await supabaseAny
+        .from('project_members')
+        .select('*')
+        .eq('project_id', projectId)
+        .eq('user_id', user!.id)
+        .eq('status', 'accepted')
+        .single()
+
+      if (membershipError || !membershipData) {
+        // メンバーシップが見つからない場合、オーナーかどうかチェック（後方互換性）
+        if (projectData.owner_id === user!.id) {
+          console.log('Owner access detected, setting owner role')
+          setCurrentUserRole('owner')
+        } else {
+          toast.error('このプロジェクトにアクセスする権限がありません')
+          router.push('/dashboard')
+          return
+        }
+      } else {
+        setCurrentUserRole(membershipData.role)
+      }
   
       // ブロック情報を取得
       const { data: blocksData, error: blocksError } = await supabaseAny
@@ -174,10 +204,44 @@ export default function ProjectPage({ params }: ProjectPageProps) {
             </div>
             
             <div className="flex items-center space-x-3">
+              {/* プロジェクト権限表示 */}
+              {currentUserRole && (
+                <span className="text-xs px-2 py-1 bg-gray-100 text-gray-600 rounded-full">
+                  {currentUserRole === 'owner' ? 'オーナー' :
+                   currentUserRole === 'admin' ? '管理者' :
+                   currentUserRole === 'editor' ? '編集者' : '閲覧者'}
+                </span>
+              )}
+
+              {/* 最終更新日 */}
               <span className="text-sm text-gray-600">
                 最終更新: {new Date(project.updated_at).toLocaleDateString('ja-JP')}
               </span>
-              <button className="text-gray-600 hover:text-gray-900 transition-colors">
+
+              {/* プロジェクト設定ボタン */}
+              {currentUserRole && (currentUserRole === 'owner' || currentUserRole === 'admin') && (
+                <button
+                  onClick={() => router.push(`/project/${resolvedParams.id}/settings`)}
+                  className="p-2 text-gray-600 hover:text-gray-900 rounded-lg hover:bg-gray-100 transition-colors"
+                  title="プロジェクト設定"
+                >
+                  <CogIcon className="w-5 h-5" />
+                </button>
+              )}
+
+              {/* 共有ボタン（管理者・オーナーのみ） */}
+              {checker.canInvite() && (
+                <button
+                  onClick={() => router.push(`/project/${resolvedParams.id}/settings`)}
+                  className="px-3 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 flex items-center space-x-2 transition-colors"
+                >
+                  <ShareIcon className="w-4 h-4" />
+                  <span>共有</span>
+                </button>
+              )}
+
+              {/* メニューボタン（その他のオプション用） */}
+              <button className="text-gray-600 hover:text-gray-900 transition-colors p-2 rounded-lg hover:bg-gray-100">
                 <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 5v.01M12 12v.01M12 19v.01M12 6a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2z" />
                 </svg>
@@ -189,7 +253,11 @@ export default function ProjectPage({ params }: ProjectPageProps) {
 
       {/* キャンバス */}
       <div className="h-[calc(100vh-73px)]">
-        <Canvas projectId={resolvedParams.id} />
+        <Canvas 
+          projectId={resolvedParams.id}
+          canEdit={checker?.canEdit() || false}
+          canComment={checker?.canComment() || false}
+        />
       </div>
     </div>
   )

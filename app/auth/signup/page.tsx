@@ -17,6 +17,10 @@ export default function SignupPage() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     
+    if (password.length < 6) {
+      toast.error('パスワードは6文字以上で入力してください')
+      return
+    }
     if (password !== confirmPassword) {
       toast.error('パスワードが一致しません')
       return
